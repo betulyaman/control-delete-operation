@@ -222,7 +222,7 @@ NTSTATUS user_reply_notify_callback(
 		LOG_MSG("ALLOWED");
     }
     else {
-		replied_operation->data->IoStatus.Status = STATUS_ACCESS_DENIED;
+		replied_operation->data->IoStatus.Status = STATUS_UNSUCCESSFUL;
         replied_operation->data->IoStatus.Information = 0;
         FltCompletePendedPreOperation(replied_operation->data, FLT_PREOP_COMPLETE, NULL);
 
