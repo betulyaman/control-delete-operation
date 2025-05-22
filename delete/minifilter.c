@@ -104,7 +104,7 @@ NTSTATUS register_filter(_In_ PDRIVER_OBJECT driver_object)
 
         {IRP_MJ_CREATE,
          0,
-         pre_create_operation_callback,
+         pre_operation_callback,
          NULL},
 
         {IRP_MJ_OPERATION_END}
@@ -254,7 +254,7 @@ NTSTATUS user_reply_notify_callback(
 		LOG_MSG("ALLOWED");
     }
     else {
-		replied_operation->data->IoStatus.Status = STATUS_UNSUCCESSFUL;
+		replied_operation->data->IoStatus.Status = STATUS_ACCESS_DENIED;
         replied_operation->data->IoStatus.Information = 0;
         FltCompletePendedPreOperation(replied_operation->data, FLT_PREOP_COMPLETE, NULL);
 
@@ -286,52 +286,28 @@ FLT_PREOP_CALLBACK_STATUS pre_operation_callback(
         NTSTATUS status = create_confirmation_message(data, operation_id, operation_type, &message, filter_objects);
         if (!NT_SUCCESS(status)) {
             data->IoStatus.Status = STATUS_UNSUCCESSFUL;
-            LOG_MSG("FltCompletePendedPreOperation");
+            LOG_MSG("create_confirmation_message");
             return FLT_PREOP_COMPLETE;
         }
 
         status = send_message_to_user(&message);
         if (!NT_SUCCESS(status)) {
             data->IoStatus.Status = STATUS_UNSUCCESSFUL;
-            LOG_MSG("FltCompletePendedPreOperation");
+            LOG_MSG("send_message_to_user");
             return FLT_PREOP_COMPLETE;
         }
 
         status = add_operation_to_pending_list(data, operation_id);
         if (!NT_SUCCESS(status)) {
             data->IoStatus.Status = STATUS_UNSUCCESSFUL;
-            LOG_MSG("FltCompletePendedPreOperation");
+            LOG_MSG("add_operation_to_pending_list");
             return FLT_PREOP_COMPLETE;
         }
+
+        pending_operation_list_timeout_clear();
+
+
         return FLT_PREOP_PENDING;
-    }
-
-    return FLT_PREOP_SUCCESS_NO_CALLBACK;
-}
-
-
-
-FLT_PREOP_CALLBACK_STATUS pre_create_operation_callback(
-    _Inout_ PFLT_CALLBACK_DATA data,
-    _In_ PCFLT_RELATED_OBJECTS filter_objects,
-    _Flt_CompletionContext_Outptr_ PVOID* completion_callback
-) {
-    LOG_MSG("pre_operation_callback START");
-
-    UNREFERENCED_PARAMETER(filter_objects);
-    UNREFERENCED_PARAMETER(completion_callback);
-
-    if (data->Iopb->MajorFunction == IRP_MJ_CREATE) {
-        ULONG createOptions = data->Iopb->Parameters.Create.Options;
-
-        if ((createOptions & FILE_DELETE_ON_CLOSE) == FILE_DELETE_ON_CLOSE) {
-            DbgPrint("MiniFilter: FILE_DELETE_ON_CLOSE flag detected.\n");
-
-            // You can block it like this:
-            data->IoStatus.Status = STATUS_ACCESS_DENIED;
-            data->IoStatus.Information = 0;
-            return FLT_PREOP_COMPLETE;
-        }
     }
 
     return FLT_PREOP_SUCCESS_NO_CALLBACK;
@@ -343,60 +319,68 @@ OPERATION_TYPE get_operation_type(PFLT_CALLBACK_DATA data, PCFLT_RELATED_OBJECTS
 
     OPERATION_TYPE operation_type = INVALID_OPERATION;
     
-    FILE_INFORMATION_CLASS file_information_class = data->Iopb->Parameters.SetFileInformation.FileInformationClass;
-    if (file_information_class == FileDispositionInformation ||
-        file_information_class == FileDispositionInformationEx) {
+    if (data->Iopb->MajorFunction == IRP_MJ_CREATE) {
+        ULONG createOptions = data->Iopb->Parameters.Create.Options;
 
-        PFILE_DISPOSITION_INFORMATION file_information = (PFILE_DISPOSITION_INFORMATION)data->Iopb->Parameters.SetFileInformation.InfoBuffer;
-        if (file_information->DeleteFile) {
-            LOG_MSG("OPERATION_TYPE_DELETE");
-            operation_type = DELETE_OPERATION;
+        if ((createOptions & FILE_DELETE_ON_CLOSE) == FILE_DELETE_ON_CLOSE) {
+            operation_type = FILE_ON_CLOSE_OPERATION;
         }
     }
-    else if (file_information_class == FileRenameInformation || file_information_class == FileRenameInformationEx) {
+    else {
+        FILE_INFORMATION_CLASS file_information_class = data->Iopb->Parameters.SetFileInformation.FileInformationClass;
+        if (file_information_class == FileDispositionInformation ||
+            file_information_class == FileDispositionInformationEx) {
 
-        PFILE_RENAME_INFORMATION rename_info = (PFILE_RENAME_INFORMATION)data->Iopb->Parameters.SetFileInformation.InfoBuffer;
-        if (rename_info && rename_info->FileNameLength > 0) {
+            PFILE_DISPOSITION_INFORMATION file_information = (PFILE_DISPOSITION_INFORMATION)data->Iopb->Parameters.SetFileInformation.InfoBuffer;
+            if (file_information->DeleteFile) {
+                LOG_MSG("OPERATION_TYPE_DELETE");
+                operation_type = DELETE_OPERATION;
+            }
+        }
+        else if (file_information_class == FileRenameInformation || file_information_class == FileRenameInformationEx) {
 
-            PFLT_FILE_NAME_INFORMATION source_name_info = NULL;
-            PFLT_FILE_NAME_INFORMATION dest_name_info = NULL;
+            PFILE_RENAME_INFORMATION rename_info = (PFILE_RENAME_INFORMATION)data->Iopb->Parameters.SetFileInformation.InfoBuffer;
+            if (rename_info && rename_info->FileNameLength > 0) {
 
-            // Get current (source) file name
-            NTSTATUS status = FltGetFileNameInformation(data,
-                FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_ALWAYS_ALLOW_CACHE_LOOKUP,
-                &source_name_info);
-            if (NT_SUCCESS(status)) {
-                FltParseFileNameInformation(source_name_info);
+                PFLT_FILE_NAME_INFORMATION source_name_info = NULL;
+                PFLT_FILE_NAME_INFORMATION dest_name_info = NULL;
 
-                // Get destination (target) file name info
-                status = FltGetDestinationFileNameInformation(
-                    filter_objects->Instance,
-                    filter_objects->FileObject,
-                    rename_info->RootDirectory,
-                    rename_info->FileName,
-                    rename_info->FileNameLength,
+                // Get current (source) file name
+                NTSTATUS status = FltGetFileNameInformation(data,
                     FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_ALWAYS_ALLOW_CACHE_LOOKUP,
-                    &dest_name_info);
-
+                    &source_name_info);
                 if (NT_SUCCESS(status)) {
-                    FltParseFileNameInformation(dest_name_info);
+                    FltParseFileNameInformation(source_name_info);
 
-                    // Compare directories
-                    if (RtlEqualUnicodeString(&source_name_info->ParentDir, &dest_name_info->ParentDir, TRUE)) {
-                        operation_type = RENAME_OPERATION;
-                    }
-                    else {
-                        operation_type = MOVE_OPERATION;
+                    // Get destination (target) file name info
+                    status = FltGetDestinationFileNameInformation(
+                        filter_objects->Instance,
+                        filter_objects->FileObject,
+                        rename_info->RootDirectory,
+                        rename_info->FileName,
+                        rename_info->FileNameLength,
+                        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_ALWAYS_ALLOW_CACHE_LOOKUP,
+                        &dest_name_info);
+
+                    if (NT_SUCCESS(status)) {
+                        FltParseFileNameInformation(dest_name_info);
+
+                        // Compare directories
+                        if (RtlEqualUnicodeString(&source_name_info->ParentDir, &dest_name_info->ParentDir, TRUE)) {
+                            operation_type = RENAME_OPERATION;
+                        }
+                        else {
+                            operation_type = MOVE_OPERATION;
+                        }
+
+                        FltReleaseFileNameInformation(dest_name_info);
                     }
 
-                    FltReleaseFileNameInformation(dest_name_info);
+                    FltReleaseFileNameInformation(source_name_info);
                 }
-
-                FltReleaseFileNameInformation(source_name_info);
             }
         }
     }
-
     return operation_type;
 }
 

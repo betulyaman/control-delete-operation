@@ -2,6 +2,9 @@
 
 #include "log.h"
 
+#define TIMEOUT_SECONDS 15
+#define HUNDRED_NANOSECONDS_PER_SECOND 10000000LL
+
 FAST_MUTEX g_pending_operation_list_lock;
 LIST_ENTRY g_pending_operation_list;
 
@@ -62,6 +65,7 @@ NTSTATUS add_operation_to_pending_list(_In_ PFLT_CALLBACK_DATA data, _In_ ULONG 
 	RtlZeroMemory(pending, sizeof(PENDING_OPERATION));
 	pending->operation_id = operation_id;
 	pending->data = data;
+	KeQuerySystemTimePrecise(&pending->time);
 	pending_operation_list_append(pending);
 
 	LOG_MSG("add_operation_to_pending_list END");
@@ -85,6 +89,40 @@ VOID pending_operation_list_clear() {
 
 	ExReleaseFastMutex(&g_pending_operation_list_lock);
 	LOG_MSG("pending_operation_list_clear END");
+
+}
+
+VOID pending_operation_list_timeout_clear() {
+	LARGE_INTEGER current_time;
+	KeQuerySystemTimePrecise(&current_time);
+
+	ExAcquireFastMutex(&g_pending_operation_list_lock);
+
+	PLIST_ENTRY entry = g_pending_operation_list.Flink;
+	while (entry != &g_pending_operation_list) {
+		PENDING_OPERATION* op = CONTAINING_RECORD(entry, PENDING_OPERATION, list_entry);
+
+		LONGLONG elapsed = current_time.QuadPart - op->time.QuadPart;
+
+		if (elapsed >= (TIMEOUT_SECONDS * HUNDRED_NANOSECONDS_PER_SECOND)) { // TODO: elapsed has 8 digits in debug?? It always FALSE
+
+			PLIST_ENTRY to_remove = entry;
+			RemoveEntryList(to_remove);
+			entry = entry->Flink;
+
+			op->data->IoStatus.Status = STATUS_ACCESS_DENIED;
+			op->data->IoStatus.Information = 0;
+			FltCompletePendedPreOperation(op->data, FLT_PREOP_COMPLETE, NULL);
+
+			DbgPrint("\nTIMEOUT: %d\n", op->operation_id);
+			ExFreePoolWithTag(op, PENDING_OPERATION_TAG);
+		}
+		else {
+			entry = entry->Flink;
+		}
+	}
+
+	ExReleaseFastMutex(&g_pending_operation_list_lock);
 
 }
 
