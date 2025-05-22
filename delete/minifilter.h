@@ -15,6 +15,7 @@ typedef enum {
 }OPERATION_TYPE;
 
 typedef struct {
+	LONG agent_process_id;
 	PFLT_FILTER registered_filter;
 	PFLT_PORT server_port;
 	PFLT_PORT client_port;

@@ -144,30 +144,25 @@ NTSTATUS connect_notify_callback(
 
 	FLT_ASSERT(g_context.client_port == NULL);
     
+    typedef struct {
+        ULONG token;
+        LONG process_id;
+    } ConnectionContext;
+
     const ULONG expected_token = 0xA5A5A5A5;
-    if (size_of_context != sizeof(ULONG)) {
+
+    if (size_of_context != sizeof(ConnectionContext)) {
         return STATUS_ACCESS_DENIED;
     }
     
-    ULONG received_token = 0;
-    RtlCopyMemory(&received_token, connection_context, sizeof(ULONG));
-    if (received_token != expected_token) {
+
+    ConnectionContext context;
+    RtlCopyMemory(&context, connection_context, size_of_context);
+    if (context.token != expected_token) {
         return STATUS_ACCESS_DENIED;
     }
 
-    // The ConnectNotifyCallback for a minifilter communication port is called in the context
-    // of the thread opening a handle to the port, so you can simply obtain the PID or process
-    // with PsGetCurrentProcessId or PsGetCurrentProcess.
-    ULONG pid = (ULONG)(ULONG_PTR)PsGetCurrentProcessId();
-    PEPROCESS proc = PsGetCurrentProcess();
-    PUNICODE_STRING proc_name = NULL;
-    if (NT_SUCCESS(SeLocateProcessImageName(proc, &proc_name)) && proc_name != NULL) {
-        DbgPrint("Connect from PID %lu, Image: %wZ\n", pid, proc_name);
-        ExFreePool(proc_name);
-    }
-    else {
-        DbgPrint("Connect from PID %lu, unable to retrieve process image name.\n", pid);
-    }
+    g_context.agent_process_id = (LONG)(ULONG_PTR)PsGetCurrentProcessId();
 
 	g_context.client_port = client_port;
 	return STATUS_SUCCESS;
@@ -275,6 +270,10 @@ FLT_PREOP_CALLBACK_STATUS pre_operation_callback(
 
     UNREFERENCED_PARAMETER(filter_objects);
     UNREFERENCED_PARAMETER(completion_callback);
+
+    if (FltGetRequestorProcessId(data) == (ULONG)g_context.agent_process_id) {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
 
      // if(data->RequestorMode == UserMode) {}
     OPERATION_TYPE operation_type = get_operation_type(data, filter_objects);
