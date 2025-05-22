@@ -4,10 +4,11 @@
 Minifilter, attach olduğu volume'de gerçekleşen `DELETE`, `MOVE` ve `RENAME` işlemlerini user onayı sunmakta, gelen cevaba göre işlemi engellemekte ya da gerçekleşmesine izin vermektedir.
 
 > **NOTE:** User programı çalışmıyorken minifilter attach olduğu volume'deki `DELETE`, `MOVE` ve `RENAME` işlemlerini direkt olarak engeller.
-> cmd.exe'nin `DELETE` işlemini minifilter'a rağmen yapabildiği görülmüştür. Bu durum ayrı olarak incelenmelidir.
+> ~~cmd.exe'nin `DELETE` işlemini minifilter'a rağmen yapabildiği görülmüştür. Bu durum ayrı olarak incelenmelidir.~~
+> IRP_MJ_CREATE major fonksiyonu register edilip "FILE_DELETE_ON_CLOSE" bayrağı kontrol edilerek **cmd.exe** ve **shift + delete** ile silme işlemleri de kontrol edilebilir hale getirilmiştir.
 
 > **NOTE:** Kernel `STATUS_UNSUCCESSFUL` yerine `STATUS_ACCESS_DENIED` döndürdüğünde, user'ın `DELETE`, `MOVE` ve `RENAME` işlemleri için iki kere **ret** cevabı vermesi gerekmektedir.
-> Vscode **ret** cevabını kabul etmemekte ve **onay** mesajı gelene kadar kullanıcıya sormaya devam etmektedir.
+> Vscode **ret** cevabı aldığında 9 kere tekrar sormaktadır.
 
 
 # Screen Dumps
