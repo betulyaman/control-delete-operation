@@ -16,6 +16,8 @@ NTSTATUS add_operation_to_pending_list(_In_ PFLT_CALLBACK_DATA data, _In_ ULONG 
 NTSTATUS send_message_to_user(_In_ CONFIRMATION_MESSAGE* message);
 LONG exception_handler(_In_ PEXCEPTION_POINTERS ExceptionPointer, _In_ BOOLEAN AccessingUserBuffer);
 OPERATION_TYPE get_operation_type(PFLT_CALLBACK_DATA data, PCFLT_RELATED_OBJECTS filter_objects);
+BOOLEAN is_restricted(_In_ PFLT_CALLBACK_DATA data);
+BOOLEAN is_agent_connected();
 
 NTSTATUS DriverEntry(
     _In_ PDRIVER_OBJECT driver_object,
@@ -97,17 +99,17 @@ NTSTATUS register_filter(_In_ PDRIVER_OBJECT driver_object)
     LOG_MSG("register_filter START");
 
     CONST FLT_OPERATION_REGISTRATION callbacks[] = {
-        {IRP_MJ_SET_INFORMATION,
-         0,
-         pre_operation_callback,
-		 NULL},
-
-        {IRP_MJ_CREATE,
-         0,
-         pre_operation_callback,
-         NULL},
-
-        {IRP_MJ_OPERATION_END}
+    { IRP_MJ_CREATE, 0, pre_operation_callback, NULL },
+    { IRP_MJ_READ, 0, pre_operation_callback, NULL },
+    { IRP_MJ_WRITE, 0, pre_operation_callback, NULL },
+    { IRP_MJ_SET_INFORMATION, 0, pre_operation_callback, NULL },
+    { IRP_MJ_CLEANUP, 0, pre_operation_callback, NULL },
+    { IRP_MJ_CLOSE, 0, pre_operation_callback, NULL },
+    { IRP_MJ_DIRECTORY_CONTROL, 0, pre_operation_callback, NULL },
+    { IRP_MJ_QUERY_INFORMATION, 0, pre_operation_callback, NULL },
+    { IRP_MJ_SET_SECURITY, 0, pre_operation_callback, NULL },
+    { IRP_MJ_QUERY_SECURITY, 0, pre_operation_callback, NULL },
+    { IRP_MJ_OPERATION_END }
     };
 
     CONST FLT_REGISTRATION registration_data = {
@@ -147,6 +149,7 @@ NTSTATUS connect_notify_callback(
     typedef struct {
         ULONG token;
         LONG process_id;
+        WCHAR path[256];
     } ConnectionContext;
 
     const ULONG expected_token = 0xA5A5A5A5;
@@ -155,16 +158,18 @@ NTSTATUS connect_notify_callback(
         return STATUS_ACCESS_DENIED;
     }
     
-
     ConnectionContext context;
     RtlCopyMemory(&context, connection_context, size_of_context);
     if (context.token != expected_token) {
         return STATUS_ACCESS_DENIED;
     }
 
-    g_context.agent_process_id = (LONG)(ULONG_PTR)PsGetCurrentProcessId();
+    g_context.agent_process_id = context.process_id;
+
+    RtlCopyMemory(g_context.agent_path, context.path, sizeof(context.path));
 
 	g_context.client_port = client_port;
+
 	return STATUS_SUCCESS;
 }
 
@@ -266,16 +271,27 @@ FLT_PREOP_CALLBACK_STATUS pre_operation_callback(
     _In_ PCFLT_RELATED_OBJECTS filter_objects,
     _Flt_CompletionContext_Outptr_ PVOID* completion_callback
 ) {
-    LOG_MSG("pre_operation_callback START");
-
-    UNREFERENCED_PARAMETER(filter_objects);
     UNREFERENCED_PARAMETER(completion_callback);
 
+    /*** Check if the requester is Agent ***/
     if (FltGetRequestorProcessId(data) == (ULONG)g_context.agent_process_id) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
+    
+    if (!is_agent_connected()) { //breakpoint
+        LOG_MSG("Agent not connected");
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
 
-     // if(data->RequestorMode == UserMode) {}
+    /*** Check operation path ***/
+    if (is_restricted(data)) {
+        data->IoStatus.Status = STATUS_ACCESS_DENIED;
+        data->IoStatus.Information = 0;
+        return FLT_PREOP_COMPLETE;
+    }
+    /******/
+
+
     OPERATION_TYPE operation_type = get_operation_type(data, filter_objects);
     if (operation_type != INVALID_OPERATION) {
         LONG operation_id = g_operation_id;
@@ -483,36 +499,7 @@ NTSTATUS get_file_name(_Inout_ PFLT_CALLBACK_DATA data, _Out_ PUNICODE_STRING fi
         return status;
     }
 
-    LOG_MSG("get_file_name END");
-
-    return status;
-}
-
-NTSTATUS get_target_name(_Inout_ PFLT_CALLBACK_DATA data, _Out_ PUNICODE_STRING file_name) {
-    LOG_MSG("get_file_name START");
-
-    if (file_name == NULL) {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    PFLT_FILE_NAME_INFORMATION name_info;
-    NTSTATUS status = FltGetFileNameInformation(data, FLT_FILE_NAME_NORMALIZED, &name_info);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
-
-    status = FltParseFileNameInformation(name_info);
-    if (!NT_SUCCESS(status)) {
-        FltReleaseFileNameInformation(name_info);
-        return status;
-    }
-
-    status = RtlUnicodeStringCopy(file_name, &name_info->Name);
-    if (!NT_SUCCESS(status)) {
-        FltReleaseFileNameInformation(name_info);
-        return status;
-    }
-
+    FltReleaseFileNameInformation(name_info);
     LOG_MSG("get_file_name END");
 
     return status;
@@ -571,4 +558,34 @@ LONG exception_handler(
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+BOOLEAN is_restricted(_In_ PFLT_CALLBACK_DATA data) {
+    PFLT_FILE_NAME_INFORMATION name_info;
+    NTSTATUS status = FltGetFileNameInformation(data, FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_ALWAYS_ALLOW_CACHE_LOOKUP, &name_info);
+    if (!NT_SUCCESS(status)) {
+        return FALSE;
+    }
 
+    status = FltParseFileNameInformation(name_info);
+    if (!NT_SUCCESS(status)) {
+        FltReleaseFileNameInformation(name_info);
+        return FALSE;
+    }
+
+    UNICODE_STRING restricted_path;
+    RtlInitUnicodeString(&restricted_path, g_context.agent_path);
+    if (RtlPrefixUnicodeString(&restricted_path, &(name_info->Name), TRUE)) {
+        FltReleaseFileNameInformation(name_info);
+        return TRUE;
+    }
+
+    FltReleaseFileNameInformation(name_info);
+    return FALSE;
+}
+
+BOOLEAN is_agent_connected() {
+    return (g_context.client_port != NULL);
+}
+
+BOOLEAN is_windows(_In_ PFLT_CALLBACK_DATA data) {
+
+}
