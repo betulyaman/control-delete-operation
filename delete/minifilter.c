@@ -1,10 +1,9 @@
-#include "minifilter.h"
+﻿#include "minifilter.h"
 
 #include "pending_operation_list.h"
 
 #include <fltKernel.h>
 #include <ntstrsafe.h>
-
 
 DELETE_CONTEXT g_context;
 LONG g_operation_id;
@@ -18,6 +17,7 @@ LONG exception_handler(_In_ PEXCEPTION_POINTERS ExceptionPointer, _In_ BOOLEAN A
 OPERATION_TYPE get_operation_type(PFLT_CALLBACK_DATA data, PCFLT_RELATED_OBJECTS filter_objects);
 BOOLEAN is_restricted(_In_ PFLT_CALLBACK_DATA data);
 BOOLEAN is_agent_connected();
+BOOLEAN is_trusted_installer_process();
 
 NTSTATUS DriverEntry(
     _In_ PDRIVER_OBJECT driver_object,
@@ -283,6 +283,10 @@ FLT_PREOP_CALLBACK_STATUS pre_operation_callback(
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
+    if (is_trusted_installer_process()) {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+
     /*** Check operation path ***/
     if (is_restricted(data)) {
         data->IoStatus.Status = STATUS_ACCESS_DENIED;
@@ -290,7 +294,6 @@ FLT_PREOP_CALLBACK_STATUS pre_operation_callback(
         return FLT_PREOP_COMPLETE;
     }
     /******/
-
 
     OPERATION_TYPE operation_type = get_operation_type(data, filter_objects);
     if (operation_type != INVALID_OPERATION) {
@@ -586,6 +589,42 @@ BOOLEAN is_agent_connected() {
     return (g_context.client_port != NULL);
 }
 
-BOOLEAN is_windows(_In_ PFLT_CALLBACK_DATA data) {
+BOOLEAN ContainsSubstringInsensitive(PUNICODE_STRING source, PCWSTR substring)
+{
+    if (!source || !substring) return FALSE;
 
+    size_t sourceLen = source->Length / sizeof(WCHAR);
+    size_t subLen = wcslen(substring);
+
+    if (subLen == 0 || subLen > sourceLen)
+        return FALSE;
+
+    for (size_t i = 0; i <= sourceLen - subLen; ++i) {
+        if (_wcsnicmp(&source->Buffer[i], substring, subLen) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+BOOLEAN is_trusted_installer_process()
+{
+    PUNICODE_STRING imageName = NULL;
+    PEPROCESS process = PsGetCurrentProcess();
+
+    if (!NT_SUCCESS(SeLocateProcessImageName(process, &imageName)) || imageName == NULL) {
+        return FALSE;
+    }
+
+    BOOLEAN result = FALSE;
+
+    if (ContainsSubstringInsensitive(imageName, L"\\svchost.exe") ||
+        ContainsSubstringInsensitive(imageName, L"\\wuauclt.exe") ||
+        ContainsSubstringInsensitive(imageName, L"\\TrustedInstaller.exe"))
+    {
+        result = TRUE;
+    }
+
+    ExFreePool(imageName);
+    return result;
 }
