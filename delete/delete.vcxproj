@@ -117,11 +117,13 @@
   <ItemGroup>
     <ClCompile Include="minifilter.c" />
     <ClCompile Include="pending_operation_list.c" />
+    <ClCompile Include="security_control.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="log.h" />
     <ClInclude Include="minifilter.h" />
     <ClInclude Include="pending_operation_list.h" />
+    <ClInclude Include="security_control.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
